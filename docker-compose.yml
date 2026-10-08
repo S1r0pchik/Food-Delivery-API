@@ -1,0 +1,65 @@
+name: food-delivery-api
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: food-delivery-api-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres_password
+      POSTGRES_DB: food_delivery
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./migrations/000001_init_schema.up.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+      - ./migrations/seed.sql:/docker-entrypoint-initdb.d/02_seed.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d food_delivery"]
+      interval: 3s
+      timeout: 3s
+      retries: 5
+    networks:
+      - kitchen-net
+
+  core:
+    build:
+      context: .
+      dockerfile: Dockerfile.core
+    container_name: food-delivery-api-core
+    ports:
+      - "8080:8080"
+    environment:
+      CORE_HTTP_PORT: "8080"
+      DATABASE_URL: "postgres://postgres:postgres_password@postgres:5432/food_delivery?sslmode=disable"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      restaurant-mock:
+        condition: service_started
+    networks:
+      - kitchen-net
+
+  restaurant-mock:
+    build:
+      context: .
+      dockerfile: Dockerfile.restaurant
+    container_name: food-delivery-api-restaurant-mock
+    ports:
+      - "8081:8081"
+    environment:
+      RESTAURANT_HTTP_PORT: "8081"
+      CORE_BASE_URL: "http://core:8080"
+      RESTAURANT_ID: "11111111-1111-1111-1111-111111111111"
+      RESTAURANT_API_KEY: "restaurant-secret-api-key-123"
+      RESTAURANT_WEBHOOK_SECRET: "hmac-secret-signature-key-456"
+      RESTAURANT_AUTO_ACCEPT: "true"
+    networks:
+      - kitchen-net
+
+volumes:
+  pgdata:
+
+networks:
+  kitchen-net:
+    driver: bridge
