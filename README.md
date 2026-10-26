@@ -1,237 +1,157 @@
 # Food Delivery API
 
-**Food Delivery API** — бэкенд-сервис доставки еды на Go и PostgreSQL с клиентским API, партнёрским API для ресторанов и интеграцией через вебхуки.
+A Go backend for browsing menus, placing orders, and updating order status.
+It uses PostgreSQL, chi, and pgx. Restaurants receive new orders through webhooks
+signed with HMAC-SHA256.
 
-Клиенты просматривают меню и оформляют заказы. Рестораны принимают заказы, обновляют статус приготовления и отмечают, когда заказ готов к выдаче.
+The project includes a small restaurant simulator that accepts orders and moves
+them through the cooking steps.
 
-## Как запустить проект
+## Run it
 
-Для запуска нужны Docker и Docker Compose. Выполните команду из корня проекта:
+You need Docker with Compose. From the project folder, run:
 
-```bash
+```sh
 docker compose up --build
 ```
 
-**После запуска будут доступны:**
-- Основной сервер API на порту `8080`.
-- PostgreSQL на порту `5432`. При первом запуске в пустой базе создаются таблицы и добавляется ресторан «Додо & Ко» с пиццей и напитками.
-- **Имитатор ресторана** на порту `8081`. Он получает вебхуки о новых заказах и обновляет статусы приготовления через партнёрский API.
+Make sure ports 8080, 8081, and 5432 are free before starting.
 
-Документация API и отправка запросов через Swagger UI: [http://localhost:8080/swagger/](http://localhost:8080/swagger/)
+| Service | Address |
+|---|---|
+| Main API | `http://localhost:8080` |
+| Restaurant simulator | `http://localhost:8081` |
+| PostgreSQL | `localhost:5432` |
 
----
+On the first run with an empty database, Docker creates the tables and adds one
+restaurant with pizza and drinks. The demo menu uses Russian names.
 
-## Как это работает
+Open [Swagger UI](http://localhost:8080/swagger/) to read the API docs and send
+requests. The [OpenAPI file](docs/openapi.yaml) is also in the repository.
 
-После запуска можно посмотреть меню и оформить заказ из терминала.
+To stop the services and keep the database:
 
-**1. Выбор ресторана и просмотр меню:**
-```bash
-# Список ресторанов
+```sh
+docker compose down
+```
+
+## Try an order
+
+The examples below use Bash syntax. On Windows, you can send the same requests
+through Swagger UI.
+
+List restaurants and check the demo menu:
+
+```sh
 curl http://localhost:8080/api/v1/restaurants
 
-# Меню ресторана
 curl http://localhost:8080/api/v1/restaurants/11111111-1111-1111-1111-111111111111/menu
 ```
 
-**2. Оформление заказа:**
-Сервис проверяет доступность блюд и сравнивает текущие цены с ценами в запросе. Если проверка пройдена, он сохраняет заказ и отправляет ресторану вебхук с HMAC-подписью.
-```bash
+Place an order using an item from the demo menu:
+
+```sh
 curl -X POST http://localhost:8080/api/v1/orders \
   -H "Content-Type: application/json" \
   -H "X-User-ID: 00000000-0000-0000-0000-000000000001" \
   -d '{
     "restaurant_id": "11111111-1111-1111-1111-111111111111",
-    "delivery_address": "ул. Мира, д. 1",
+    "delivery_address": "10 Main Street",
     "contact_phone": "+79991234567",
     "items": [
-      {"item_id": "44444444-4444-4444-4444-444444444444", "quantity": 1, "expected_price": 590.00}
+      {
+        "item_id": "44444444-4444-4444-4444-444444444444",
+        "quantity": 1,
+        "expected_price": 590.00
+      }
     ]
   }'
 ```
 
-*В логах `docker compose` можно проследить, как имитатор ресторана проверяет подпись вебхука, принимает заказ и меняет его статус: CONFIRMED -> COOKING -> READY_FOR_PICKUP.*
+Use the returned order ID to check its status:
 
----
-
-## Сценарии клиента и ресторана (CJM)
-
-Сценарии работы с диаграммами PlantUML и Mermaid:
-* **[Путь клиента (CJM)](docs/diagrams/cjm_client.md)** — оформление заказа, недоступные блюда и отмена по таймауту.
-* **[Путь ресторана (CJM)](docs/diagrams/cjm_restaurant.md)** — приём заказов, управление доступностью блюд и проверка подписи вебхука.
-
----
-
-## Архитектура и схемы БД
-
-<details>
-<summary><b>Схемы сервисов, компонентов и базы данных</b></summary>
-
-### Сервисы и их взаимодействие
-
-```mermaid
-graph TD
-    Client(["Клиент"])
-    Courier(["Курьерская служба"])
-
-    subgraph Platform["Food Delivery API"]
-        Core["Core Service<br/>Go · chi"]
-        DB[("PostgreSQL 16")]
-        Mock["Restaurant Mock<br/>Go · chi"]
-    end
-
-    Client -- "REST /api/v1/*" --> Core
-    Courier -- "REST /api/v1/internal/*" --> Core
-    Core -- "pgx pool" --> DB
-    Core -- "Webhook + HMAC" --> Mock
-    Mock -- "Partner API + X-API-Key" --> Core
+```sh
+curl http://localhost:8080/api/v1/orders/ORDER_ID \
+  -H "X-User-ID: 00000000-0000-0000-0000-000000000001"
 ```
 
-### Компоненты основного сервиса
+The simulator checks the webhook signature, accepts the order, and updates it to
+`COOKING`, then `READY_FOR_PICKUP`. Watch the steps in the Compose logs:
 
-```mermaid
-graph TD
-    subgraph HTTP["Transport (chi)"]
-        CH[Client Handlers]
-        PH[Partner Handlers]
-        PLH[Platform Handlers]
-    end
-
-    subgraph Logic["Business Logic"]
-        OUC[OrderUsecase]
-        CUC[CatalogUsecase]
-        PUC[PartnerUsecase]
-    end
-
-    subgraph Infra["Infrastructure"]
-        Repo[(Repository)]
-        WC[WebhookClient]
-        TW[TimeoutWorker]
-    end
-
-    CH --> CUC & OUC
-    PH --> PUC
-    PLH --> OUC
-    OUC --> Repo & WC
-    CUC --> Repo
-    PUC --> Repo
-    TW --> Repo
+```sh
+docker compose logs -f core restaurant-mock
 ```
 
-### Схема БД (ER-диаграмма)
+## How it works
 
-```mermaid
-erDiagram
-    restaurants {
-        UUID id PK
-        VARCHAR name
-        TEXT address
-        BOOLEAN is_open
-        VARCHAR cuisine_type
-        TEXT webhook_url
-        VARCHAR api_key UK
-        VARCHAR webhook_secret
-        INT estimated_cooking_time_minutes
-    }
-
-    menu_categories {
-        UUID id PK
-        UUID restaurant_id FK
-        VARCHAR name
-        INT sort_order
-    }
-
-    menu_items {
-        UUID id PK
-        UUID restaurant_id FK
-        UUID category_id FK
-        VARCHAR name
-        TEXT description
-        NUMERIC price
-        BOOLEAN is_available
-        TEXT photo_url
-    }
-
-    orders {
-        UUID id PK
-        UUID user_id
-        UUID restaurant_id FK
-        VARCHAR status
-        VARCHAR cancellation_reason
-        TEXT delivery_address
-        VARCHAR contact_phone
-        TEXT comment
-        NUMERIC total_amount
-        INT estimated_cooking_time_minutes
-        TIMESTAMPTZ confirmation_deadline_at
-    }
-
-    order_items {
-        UUID id PK
-        UUID order_id FK
-        UUID menu_item_id FK
-        VARCHAR name_at_order
-        NUMERIC price_at_order
-        INT quantity
-        NUMERIC total_price
-    }
-
-    restaurants ||--o{ menu_categories : ""
-    restaurants ||--o{ menu_items : ""
-    menu_categories ||--o{ menu_items : ""
-    restaurants ||--o{ orders : ""
-    orders ||--o{ order_items : ""
-    menu_items ||--o{ order_items : ""
-```
-
-Особенности хранения заказов:
-- `order_items.price_at_order` — хранит цену на момент оформления заказа. Обновление меню не меняет стоимость старых заказов.
-- `menu_item_id ON DELETE SET NULL` — при удалении блюда из меню история старых заказов сохраняется.
-- Ограничения `CHECK` в базе требуют указать причину отмены заказа.
-
-### Жизненный цикл заказа
+- The API checks that the restaurant is open, the items are available, and the
+  prices match the request.
+- The order and its items are saved in one database transaction. Item names and
+  prices are saved with the order, so later menu changes do not change old orders.
+- After saving the order, the API sends a signed webhook to the restaurant.
+  The restaurant uses the partner API and its `X-API-Key` to accept or reject it
+  and update the cooking status.
+- A background worker cancels orders that have not been confirmed within ten
+  minutes. It checks for expired orders every ten seconds.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> CREATED : Клиент оформляет
-    CREATED --> CONFIRMED : Ресторан принимает
-    CREATED --> CANCELLED : Отклонение / отмена / таймаут
-    CONFIRMED --> COOKING : Начало готовки
-    COOKING --> READY_FOR_PICKUP : Готово
-    READY_FOR_PICKUP --> IN_DELIVERY : Курьер забрал
-    IN_DELIVERY --> DELIVERED : Доставлено
+    [*] --> CREATED
+    CREATED --> CONFIRMED
+    CREATED --> CANCELLED
+    CONFIRMED --> COOKING
+    COOKING --> READY_FOR_PICKUP
+    READY_FOR_PICKUP --> IN_DELIVERY
+    IN_DELIVERY --> DELIVERED
     CANCELLED --> [*]
     DELIVERED --> [*]
 ```
 
-</details>
+The simulator stops at `READY_FOR_PICKUP`. Delivery steps use a separate internal
+API. All routes and request bodies are listed in Swagger UI.
 
----
+The code is split into HTTP handlers, business logic, and database access under
+`internal/core`. The restaurant simulator is under `internal/restaurant`.
 
-## Упрощения текущей версии
-Некоторые части сервиса упрощены для локального запуска:
+More detailed flow diagrams are available in Russian:
+[customer flow](docs/diagrams/cjm_client.md) and
+[restaurant flow](docs/diagrams/cjm_restaurant.md).
 
-| Упрощение | Описание |
-|---|---|
-| Аутентификация через заголовки (`X-User-ID`, `X-API-Key`) | Клиент передаёт ID в заголовке, ресторан — API-ключ. Полноценная аутентификация пользователей не реализована. |
-| Один ресторан в базе при запуске | В начальных данных есть один ресторан с меню. Схема базы позволяет добавлять другие. |
-| Миграции через `docker-entrypoint` | SQL-файлы выполняются при создании пустой базы. Для обновления существующей базы нужен отдельный механизм миграций. |
-| Цены в `float64` | Денежные расчёты используют `float64`. Для точных расчётов стоит перейти на целые копейки или `decimal`. |
+## Tests
 
-## Запуск тестов
-Тесты, статический анализ и линтер запускаются из корня проекта:
+Use Go 1.27 or later. Run these commands from the project folder:
 
-Для тестов нужен Go 1.27, для проверки линтером — golangci-lint 2.14.0.
-
-```bash
-# Unit-тесты
-go test -v ./...
-
-# Встроенный статанализ Go
+```sh
+go test ./...
 go vet ./...
+go build ./...
+```
 
-# Линтер golangci-lint (настройки лежат в .golangci.yml)
+The tests cover order rules, price and availability checks, HTTP handlers,
+webhook signatures, and timeout handling. They use mocks and local test servers;
+a running PostgreSQL instance is not required.
+
+For lint checks, use golangci-lint 2.14.0:
+
+```sh
 golangci-lint run
 ```
 
----
+GitHub Actions runs tests with the race detector, static analysis, lint checks,
+and Docker builds for both services.
+
+## Limits
+
+This is a local demo with a few shortcuts:
+
+- Clients pass `X-User-ID` directly. There is no user login or identity check.
+  Restaurants use API keys; internal delivery routes have no authentication.
+- The database starts with one restaurant. The schema supports more.
+- SQL setup runs only when the database is empty. Existing databases need a
+  separate migration step.
+- Prices use `float64` in Go. Exact money calculations would need integer minor
+  units or a decimal type.
+- Webhooks have no stored queue or automatic retries. A failed send is logged;
+  an order left unconfirmed is later cancelled by the timeout worker.
+
+The credentials in Compose are for local development.
